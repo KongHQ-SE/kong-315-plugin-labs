@@ -58,8 +58,7 @@ for name in sorted(headers):
 
 > **If the output looks unchanged from before**, wait a few seconds and run the
 > curl again. Config takes **10–16 seconds** to reach the data plane. Every
-> confusing result in this lab is that timer. If you'd rather block than re-run
-> by hand: `./bin/wait-for --present X-App-Tier`
+> confusing result in this lab is that timer.
 
 Expected:
 

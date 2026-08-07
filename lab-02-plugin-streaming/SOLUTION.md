@@ -122,8 +122,11 @@ Only a config payload change (or a restart) does.
 happens.
 
 **Config propagation takes 10–16 seconds.** Long enough that curling immediately
-gives you the previous state and a wrong conclusion. Use `./bin/wait-for`.
+gives you the previous state and a wrong conclusion. Re-run until the output
+changes.
 
-**Wait on a condition that distinguishes the new state.** After Step 1, waiting
-on `--status 200` is useless — the route returned 200 before the plugin existed.
-Wait on `--present X-Jwt-Sub`.
+**Watch a signal that distinguishes the new state from the old one.** After
+Step 1, checking that the route returns HTTP 200 proves nothing — it returned
+200 before the plugin existed. `X-Jwt-Sub` appearing upstream is the signal that
+the plugin is actually live. An earlier version of this lab got this wrong and
+produced a confidently incorrect result.

@@ -70,4 +70,5 @@ after `sync`, you'll read the *previous* state and conclude nothing happened.
 
 This bit the author of this lab while building it — an early version of the
 priority table above was completely wrong because every measurement was one
-iteration stale. Use `./bin/wait-for` rather than a fixed `sleep`.
+iteration stale. Re-run the curl until the output actually changes — don't
+assume one request after `sync` reflects the new config.

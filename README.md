@@ -59,14 +59,10 @@ exercise is broken.
 When a result looks wrong, **re-run the same curl** before debugging anything
 else. That's the fix nine times out of ten.
 
-If you'd rather block than re-run by hand, there's an optional helper:
-
-```bash
-./bin/wait-for --present X-Jwt-Sub    # blocks until that header reaches the upstream
-```
-
-It only waits — it never tells you whether the exercise worked. That part is
-yours to read out of the curl output, which is the whole point of these labs.
+There is deliberately no wrapper script that waits for you, and no script that
+tells you whether a step passed. Every check in these labs is a `curl` you run
+and output you read. If you're going to demo this to a customer, you want the
+commands in your fingers, not in a helper.
 
 ---
 
@@ -84,7 +80,7 @@ Removes the local containers and deletes the `kong-315-labs` control plane from 
 
 ```
 setup/          one-command environment bring-up and teardown
-bin/            deck wrapper, proxy URL helper, propagation waiter
+bin/            deck wrapper (containerised) and proxy URL helper
 lab-01-*/       plugin cloning: broken config -> cloned fix -> stretch task
 lab-02-*/       plugin streaming: deploy a custom plugin -> hot-update it
 FACILITATOR.md  run-of-show and troubleshooting

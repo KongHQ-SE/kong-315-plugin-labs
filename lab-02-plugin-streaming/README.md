@@ -103,8 +103,7 @@ for name in sorted(headers):
 ```
 
 > **Nothing yet?** Wait a few seconds and re-run. Config takes **10–16 seconds**
-> to reach the data plane. To block instead of re-running:
-> `./bin/wait-for --present X-Jwt-Sub`
+> to reach the data plane. Every confusing result in this lab is that timer.
 
 ```
   X-Jwt-Claims-Mapped: 4

@@ -100,15 +100,16 @@ a pass/fail script, so attendees read what the upstream actually received. The
 tradeoff is that a stale read looks like a broken lab — so when someone says "it
 didn't work", the first question is always "how long ago did you sync?"
 
-`./bin/wait-for` is available as a convenience that blocks until a condition is
-live. It's a timing utility, not a test oracle — it never says whether the
-exercise succeeded, which is the part attendees should judge themselves.
+There is no helper script that waits, and none that reports pass/fail. That is
+deliberate: an SE who runs these commands by hand walks out able to run them in
+front of a customer.
 
-If you do use it, wait on a condition that **distinguishes the new state from
-the old one**. `--status 200` after Lab 02 step 1 is useless: the route already
-returned 200 before the plugin existed. Wait on `--present X-Jwt-Sub` instead.
-That exact mistake produced a confidently wrong result while these labs were
-being built.
+The thing to coach when someone is stuck is **which signal actually
+distinguishes the new state from the old one**. After Lab 02 step 1, "the route
+returns 200" proves nothing — it returned 200 before the plugin existed. The
+real signal is `X-Jwt-Sub` appearing in the upstream echo. That exact confusion
+produced a confidently wrong result while these labs were being built, so it's
+worth naming out loud rather than waiting for someone to hit it.
 
 ### "I changed the handler and nothing changed"
 
