@@ -52,10 +52,10 @@ Verified live: on Friday 2026-08-07 at 20:00 UTC the plugin reported
 
 ## Why not `os.date()`?
 
-It's simpler to read, but it adds a dependency on what the sandbox permits and on
-the container's timezone data. Pure arithmetic on `ngx.time()` has neither
-problem. In a streamed plugin, prefer the version with fewer things that can be
-taken away from you.
+`os.date()` does work in a streamed plugin — that was verified, not assumed. The
+arithmetic version was chosen because it doesn't depend on the container's
+timezone data, which is a deployment variable you don't control across a fleet.
+Either approach is defensible; this one has one fewer moving part.
 
 ## Things that surprised us while building this
 
@@ -70,5 +70,23 @@ happens.
 gives you the previous state and a wrong conclusion. Use `./bin/wait-for`.
 
 **`kong.response.exit()` with a Lua table** serializes to JSON automatically and
-sets the content type. No `cjson` require needed — which matters, because you
-couldn't require it anyway.
+sets the content type, so you don't need to reach for `cjson` at all here.
+
+## What the sandbox actually allows
+
+The "no `require()`" constraint is narrower than it first reads: it blocks
+**your own** modules, not Kong's bundled Lua libraries. Probed on a live 3.15
+data plane from inside a streamed plugin:
+
+| Call | Result |
+|------|--------|
+| `require("cjson")` | works |
+| `require("cjson.safe")` | works |
+| `require("resty.string")` | works |
+| `ngx.decode_base64()` | works |
+| `os.date()` / `os.time()` | work |
+| `kong.request.get_body()` | available |
+
+That matters for scoping real customer plugins: JSON parsing, base64 decoding,
+and hashing are all on the table. What you can't do is split your plugin across
+files, run in `init_worker`, create timers, or touch the filesystem.
