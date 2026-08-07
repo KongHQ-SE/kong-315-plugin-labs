@@ -48,8 +48,8 @@ keep it safe, and both are worth naming:
 
 - `PRIORITY = 900` puts it below the auth plugins, so the token is already
   validated by the time it runs. Same priority lesson as Lab 01 — nice callback.
-- It strips inbound `X-JWT-*` headers, so a client can't forge one. `verify.sh`
-  tests this every run.
+- It strips inbound `X-JWT-*` headers, so a client can't forge one. Step 1 has
+  attendees send forged headers with no token and watch them get dropped.
 
 An SE who demos claim-forwarding without mentioning validation has just taught
 the room a vulnerability. Stretch task 3 has attendees remove the anti-spoofing
@@ -84,26 +84,31 @@ refused.
 
 Almost always one of three things:
 
-1. **They didn't wait.** Propagation takes **10–16 seconds**. Use
-   `./bin/wait-for`, not `sleep`, and not a bare curl.
+1. **They didn't wait.** Propagation takes **10–16 seconds**. Tell them to
+   re-run the same curl before debugging anything else.
 2. **They forgot `--include-plugin-definitions`.** Without it, decK silently
    skips `custom_plugins` and `cloned_plugins`. The sync reports success and
    nothing changes. This is the single most common failure in Lab 02.
 3. **They changed only plugin code.** See below.
 
-### `wait-for` returned instantly and the result was wrong
+### Someone curled and saw the old result
 
-Wait on a condition that **distinguishes the new state from the old one**.
+That's the propagation window again, and it will happen to several people.
 
-`./bin/wait-for --status 200` after Lab 02 step 1 is useless — the route already
-returned 200 before the plugin existed, so it succeeds immediately and you
-measure the old state. Wait on `--present X-Gate` instead.
+The labs deliberately use plain `curl` plus a small `python3` filter rather than
+a pass/fail script, so attendees read what the upstream actually received. The
+tradeoff is that a stale read looks like a broken lab — so when someone says "it
+didn't work", the first question is always "how long ago did you sync?"
 
-Same trap with `--absent`: the probe has to actually *send* the header it's
-checking for, or "absent upstream" is trivially true. `bin/wait-for` sends
-`X-Internal-Debug` and `X-Internal-Trace` on every request for this reason.
+`./bin/wait-for` is available as a convenience that blocks until a condition is
+live. It's a timing utility, not a test oracle — it never says whether the
+exercise succeeded, which is the part attendees should judge themselves.
 
-Both of these produced confidently wrong results while building these labs.
+If you do use it, wait on a condition that **distinguishes the new state from
+the old one**. `--status 200` after Lab 02 step 1 is useless: the route already
+returned 200 before the plugin existed. Wait on `--present X-Jwt-Sub` instead.
+That exact mistake produced a confidently wrong result while these labs were
+being built.
 
 ### "I changed the handler and nothing changed"
 

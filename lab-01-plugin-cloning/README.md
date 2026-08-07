@@ -19,10 +19,17 @@ Both of you need the same plugin. Watch what happens.
 
 ```bash
 export KONNECT_TOKEN='kpat_your_token_here'
+```
+
+```bash
 export PROXY=$(./bin/proxy-url)
 ```
 
 Run everything from the **repo root**, not from this folder.
+
+The upstream is a local httpbin that echoes back whatever Kong forwards to it.
+That's the trick that makes this lab readable: you're not guessing what the
+gateway did, you're reading what the upstream actually received.
 
 ---
 
@@ -32,30 +39,48 @@ Run everything from the **repo root**, not from this folder.
 ./bin/deck gateway sync lab-01-plugin-cloning/step1-broken.yaml
 ```
 
-Wait for it to reach the data plane, then check what actually ran.
-
-`X-App-Tier` is added to the request Kong sends **upstream**, so `--present`
-checks the JSON httpbin echoes back rather than the response headers:
+Now send a request carrying the two internal headers the platform guardrail is
+supposed to strip:
 
 ```bash
-./bin/wait-for --present X-App-Tier
+curl -s "$PROXY/mock" \
+  -H 'X-Internal-Debug: leak-me' \
+  -H 'X-Internal-Trace: also-leak' \
+| python3 -c '
+import json, sys
+headers = json.load(sys.stdin)["headers"]
+for name in sorted(headers):
+    if name.lower().startswith("x-"):
+        value = headers[name]
+        print(f"  {name}: {value[0] if isinstance(value, list) else value}")
+'
 ```
 
-```bash
-./lab-01-plugin-cloning/verify.sh
+> **If the output looks unchanged from before**, wait a few seconds and run the
+> curl again. Config takes **10–16 seconds** to reach the data plane. Every
+> confusing result in this lab is that timer. If you'd rather block than re-run
+> by hand: `./bin/wait-for --present X-App-Tier`
+
+Expected:
+
+```
+  X-App-Tier: gold
+  X-Forwarded-For: 172.23.0.1
+  X-Forwarded-Host: localhost
+  X-Forwarded-Path: /mock
+  X-Forwarded-Port: 8000
+  X-Forwarded-Proto: http
+  X-Internal-Debug: leak-me
+  X-Internal-Trace: also-leak
+  X-Kong-Request-Id: e5b3726dfe6c7e0c9d3a9d09a9bf735d
+  X-Real-Ip: 172.23.0.1
 ```
 
-You should see:
+Read those last two carefully. `X-Internal-Debug` and `X-Internal-Trace`
+**reached the upstream**. `X-App-Tier: gold` is there, so the app team's
+route-level plugin ran.
 
-```
-  platform guardrail (remove) ran?  NO
-  app team transform (add) ran?     YES
-
-  => Only the route-scoped plugin ran.
-```
-
-**The guardrail vanished.** No error, no warning, no log line. `X-Internal-Debug`
-sailed through to the upstream.
+**The guardrail vanished.** No error, no warning, no log line.
 
 ---
 
@@ -103,24 +128,52 @@ mistake worth making once.
 ./bin/deck gateway sync lab-01-plugin-cloning/step2-cloned.yaml --include-plugin-definitions
 ```
 
-```bash
-./bin/wait-for --absent X-Internal-Debug
-```
+Confirm the clone actually exists on the control plane:
 
 ```bash
-./lab-01-plugin-cloning/verify.sh
+./bin/deck gateway dump --include-plugin-definitions -o - | grep -A3 'cloned_plugins:'
 ```
 
-Now:
-
 ```
-  platform guardrail (remove) ran?  YES
-  app team transform (add) ran?     YES
-
-  => BOTH RAN. Cloning worked.
+cloned_plugins:
+- name: rta-platform
+  priority: 900
+  ref: request-transformer-advanced
 ```
 
-The app team's config never changed. The platform team got its guardrail back.
+Now run the **exact same curl as Step 1**:
+
+```bash
+curl -s "$PROXY/mock" \
+  -H 'X-Internal-Debug: leak-me' \
+  -H 'X-Internal-Trace: also-leak' \
+| python3 -c '
+import json, sys
+headers = json.load(sys.stdin)["headers"]
+for name in sorted(headers):
+    if name.lower().startswith("x-"):
+        value = headers[name]
+        print(f"  {name}: {value[0] if isinstance(value, list) else value}")
+'
+```
+
+Expected:
+
+```
+  X-App-Tier: gold
+  X-Forwarded-For: 172.23.0.1
+  X-Forwarded-Host: localhost
+  X-Forwarded-Path: /mock
+  X-Forwarded-Port: 8000
+  X-Forwarded-Proto: http
+  X-Kong-Request-Id: 69a4ad5aa3a2dd42ad32e66aaa6ba007
+  X-Real-Ip: 172.23.0.1
+```
+
+`X-Internal-Debug` and `X-Internal-Trace` are **gone** — the platform guardrail
+ran. `X-App-Tier: gold` is still there — the app team's transform ran too.
+
+Both plugins executed in the same request. The app team's config never changed.
 
 ---
 
@@ -129,14 +182,24 @@ The app team's config never changed. The platform team got its guardrail back.
 `priority: 900` isn't decoration. The guardrail must run *before* the app team's
 transform, or a route could re-add a header you just stripped.
 
-Change the priority in `step2-cloned.yaml` from `900` to `801`, re-sync, and
-re-verify:
+Make the collision explicit. Edit `step2-cloned.yaml` so the app team's plugin
+re-adds the header the platform team strips:
 
-```bash
-./bin/deck gateway sync lab-01-plugin-cloning/step2-cloned.yaml --include-plugin-definitions
+```yaml
+          - name: request-transformer-advanced
+            config:
+              add:
+                headers:
+                  - "X-App-Tier: gold"
+                  - "X-Internal-Debug: injected-by-route"
 ```
 
-Then read [SOLUTION.md](SOLUTION.md) for what you should have seen and why.
+Re-sync and run the curl. Then change the clone's `priority` from `900` to
+`801`, re-sync, and run it again. Same two plugins, same configs — opposite
+results.
+
+[SOLUTION.md](SOLUTION.md) has the measured priority table and explains the
+boundary.
 
 ---
 

@@ -21,24 +21,61 @@ rebuild.
 
 ```bash
 export KONNECT_TOKEN='kpat_your_token_here'
+```
+
+```bash
 export PROXY=$(./bin/proxy-url)
 export TOKEN=$(./lab-02-plugin-streaming/make-token.sh)
 ```
 
 Run everything from the **repo root**.
 
-The test token carries these claims:
+Look at what's actually in that token, so you know what should come out the
+other side:
+
+```bash
+echo "$TOKEN" | cut -d. -f2 | python3 -c '
+import base64, json, sys
+payload = sys.stdin.read().strip()
+payload += "=" * (-len(payload) % 4)
+print(json.dumps(json.loads(base64.urlsafe_b64decode(payload)), indent=2))
+'
+```
 
 ```json
 {
   "sub": "user-42",
   "email": "jane@acme.com",
   "tenant_id": "acme-corp",
-  "roles": ["admin", "billing"],
-  "realm_access": { "roles": ["platform-admin", "auditor"] },
-  "iss": "https://id.acme.com"
+  "roles": [
+    "admin",
+    "billing"
+  ],
+  "realm_access": {
+    "roles": [
+      "platform-admin",
+      "auditor"
+    ]
+  },
+  "iss": "https://id.acme.com",
+  "exp": 4102444800
 }
 ```
+
+Note `roles` is a flat array, and `realm_access.roles` is **nested**. That
+distinction is the whole of Steps 2 and 3.
+
+Before you change anything, record what the data plane is right now:
+
+```bash
+docker inspect --format '  started={{.State.StartedAt}}  pid={{.State.Pid}}' kong-quickstart-gateway
+```
+
+```
+  started=2026-08-07T20:24:48.922669197Z  pid=3637404
+```
+
+Keep those numbers. They're the proof at the end.
 
 ---
 
@@ -51,30 +88,63 @@ block. The whole plugin is there — `schema` and `handler`, as inline Lua.
 ./bin/deck gateway sync lab-02-plugin-streaming/step1-plugin.yaml --include-plugin-definitions
 ```
 
-```bash
-./bin/wait-for --present X-Jwt-Sub
-```
+Now send the token and read what the upstream received:
 
 ```bash
-./lab-02-plugin-streaming/verify.sh
+curl -s "$PROXY/mock" -H "Authorization: Bearer $TOKEN" \
+| python3 -c '
+import json, sys
+headers = json.load(sys.stdin)["headers"]
+for name in sorted(headers):
+    if name.lower().startswith("x-jwt-"):
+        value = headers[name]
+        print(f"  {name}: {value[0] if isinstance(value, list) else value}")
+'
 ```
 
-You should see four claims land upstream, with the `roles` array flattened to a
-comma-separated list:
+> **Nothing yet?** Wait a few seconds and re-run. Config takes **10–16 seconds**
+> to reach the data plane. To block instead of re-running:
+> `./bin/wait-for --present X-Jwt-Sub`
 
 ```
-    X-Jwt-Email                  jane@acme.com
-    X-Jwt-Roles                  admin,billing
-    X-Jwt-Sub                    user-42
-    X-Jwt-Tenant-Id              acme-corp
+  X-Jwt-Claims-Mapped: 4
+  X-Jwt-Email: jane@acme.com
+  X-Jwt-Roles: admin,billing
+  X-Jwt-Sub: user-42
+  X-Jwt-Tenant-Id: acme-corp
 ```
 
-`verify.sh` also runs a **spoofing check**: it sends forged `X-JWT-sub` and
-`X-JWT-tenant-id` headers with *no token at all*. Those must never reach the
-upstream — the plugin strips any inbound header using its prefix. Without that,
-you've built an impersonation vulnerability, not an auth integration.
+Four claims, with the `roles` array flattened to a comma-separated list. You
+just deployed a custom plugin to a running gateway — no image built, no
+container restarted.
 
-Note the data plane's start time. You'll compare against it in Step 3.
+### Now try to break it
+
+The plugin sets headers your upstream is going to trust. So what stops a client
+from just *sending* those headers?
+
+Send forged ones, with **no token at all**:
+
+```bash
+curl -s "$PROXY/mock" \
+  -H 'X-JWT-sub: attacker-999' \
+  -H 'X-JWT-tenant-id: victim-corp' \
+| python3 -c '
+import json, sys
+headers = json.load(sys.stdin)["headers"]
+forged = [n for n in headers if n.lower().startswith("x-jwt-")]
+print("  X-JWT-* headers reaching upstream:", forged if forged else "none - stripped")
+'
+```
+
+```
+  X-JWT-* headers reaching upstream: none - stripped
+```
+
+The handler clears any inbound header matching its own prefix before it sets its
+own. Without those four lines of Lua you'd have built an impersonation
+vulnerability, not an auth integration. Look for the loop in
+[step1-plugin.yaml](step1-plugin.yaml).
 
 ---
 
@@ -84,21 +154,53 @@ Product comes back: *"our IdP is Keycloak, the roles we care about are nested
 under `realm_access.roles`. Forward those too."*
 
 Easy — add it to the claims list. The handler in
-[step2-nested.yaml](step2-nested.yaml) is **byte-identical** to Step 1.
+[step2-nested.yaml](step2-nested.yaml) is **byte-identical** to Step 1. Confirm
+that yourself rather than taking our word for it — the `grep` drops comment-only
+lines so you see just the real change:
+
+```bash
+diff lab-02-plugin-streaming/step1-plugin.yaml lab-02-plugin-streaming/step2-nested.yaml \
+  | grep -E '^[<>]' | grep -vE '^[<>] *#'
+```
+
+```
+<               claims: ["sub", "email", "tenant_id", "roles"]
+>               claims: ["sub", "email", "tenant_id", "roles", "realm_access.roles"]
+```
+
+One line. Not a single character of Lua changed.
 
 ```bash
 ./bin/deck gateway sync lab-02-plugin-streaming/step2-nested.yaml --include-plugin-definitions
 ```
 
+Wait ~20 seconds, then run the same curl as Step 1:
+
 ```bash
-./lab-02-plugin-streaming/verify.sh
+curl -s "$PROXY/mock" -H "Authorization: Bearer $TOKEN" \
+| python3 -c '
+import json, sys
+headers = json.load(sys.stdin)["headers"]
+for name in sorted(headers):
+    if name.lower().startswith("x-jwt-"):
+        value = headers[name]
+        print(f"  {name}: {value[0] if isinstance(value, list) else value}")
+'
 ```
 
-The counter still reads **4**, and no `X-Jwt-Realm-Access-Roles` header appears.
+```
+  X-Jwt-Claims-Mapped: 4
+  X-Jwt-Email: jane@acme.com
+  X-Jwt-Roles: admin,billing
+  X-Jwt-Sub: user-42
+  X-Jwt-Tenant-Id: acme-corp
+```
 
-No error. No warning. The plugin looked up a literal key named
-`"realm_access.roles"` in a flat table, found nothing, and moved on. **Config
-alone cannot fix this** — it needs new logic.
+Still **4**. No `X-Jwt-Realm-Access-Roles` header. No error, no warning.
+
+The plugin looked up a literal key named `"realm_access.roles"` in a flat table,
+found nothing, and moved on. **Config alone cannot fix this** — it needs new
+logic.
 
 ---
 
@@ -106,29 +208,75 @@ alone cannot fix this** — it needs new logic.
 
 This is the part that used to require a release.
 
-[step3-hotpatch.yaml](step3-hotpatch.yaml) adds a `lookup()` helper that
-resolves dot-separated paths, and also adds the `iss` claim to the config.
+See exactly what changes:
+
+```bash
+diff lab-02-plugin-streaming/step2-nested.yaml lab-02-plugin-streaming/step3-hotpatch.yaml \
+  | grep -E '^[<>]' | grep -vE '^[<>] *#'
+```
+
+```
+<         VERSION = "1.0.0",
+>         VERSION = "1.1.0",
+>       -- Resolve a dot-separated path such as "realm_access.roles".
+>       local function lookup(claims, path)
+>         local node = claims
+>         for part in path:gmatch("[^%.]+") do
+>           if type(node) ~= "table" then return nil end
+>           node = node[part]
+>         end
+>         return node
+>       end
+>
+<           local s = stringify(claims[claim])
+>           local s = stringify(lookup(claims, claim))
+<               claims: [..., "realm_access.roles"]
+>               claims: [..., "realm_access.roles", "iss"]
+```
+
+A `lookup()` helper that walks dot-separated paths (**code**), and the `iss`
+claim added to the list (**config**). Both matter — see the warning below.
 
 ```bash
 ./bin/deck gateway sync lab-02-plugin-streaming/step3-hotpatch.yaml --include-plugin-definitions
 ```
 
-```bash
-./bin/wait-for --present X-Jwt-Realm-Access-Roles
-```
+Same curl again:
 
 ```bash
-./lab-02-plugin-streaming/verify.sh
+curl -s "$PROXY/mock" -H "Authorization: Bearer $TOKEN" \
+| python3 -c '
+import json, sys
+headers = json.load(sys.stdin)["headers"]
+for name in sorted(headers):
+    if name.lower().startswith("x-jwt-"):
+        value = headers[name]
+        print(f"  {name}: {value[0] if isinstance(value, list) else value}")
+'
 ```
 
-Now six claims map, including the nested one:
+```
+  X-Jwt-Claims-Mapped: 6
+  X-Jwt-Email: jane@acme.com
+  X-Jwt-Iss: https://id.acme.com
+  X-Jwt-Realm-Access-Roles: platform-admin,auditor
+  X-Jwt-Roles: admin,billing
+  X-Jwt-Sub: user-42
+  X-Jwt-Tenant-Id: acme-corp
+```
+
+Six claims, including the nested one. Now check the data plane again:
+
+```bash
+docker inspect --format '  started={{.State.StartedAt}}  pid={{.State.Pid}}' kong-quickstart-gateway
+```
 
 ```
-    X-Jwt-Realm-Access-Roles     platform-admin,auditor
+  started=2026-08-07T20:24:48.922669197Z  pid=3637404
 ```
 
-And the data plane's **start time and PID are unchanged from Step 1**. New
-plugin logic, same process, no restart, no rebuild, no registry push.
+**Identical to what you recorded before Step 1.** New plugin logic, same
+process, no restart, no rebuild, no registry push.
 
 ---
 
@@ -153,6 +301,10 @@ Bumping the handler's `VERSION` does **not** help — that was tested too.
 Step 3 works because it changes code *and* config together. Most real changes
 do, which is why this stays hidden until the one time it doesn't.
 
+Prove it to yourself: edit `step3-hotpatch.yaml`, change the handler's
+`X-JWT-` prefix logic or add a claim mapping, but **touch nothing** in the
+`config:` block. Re-sync and curl. Nothing changes.
+
 ---
 
 ## Step 4 — Stretch
@@ -164,7 +316,8 @@ Pick one:
 2. **Rename claims on the way out.** Let config map `tenant_id` → `X-Org-Id`
    rather than deriving the header name from the claim.
 3. **Break the security model on purpose.** Remove the anti-spoofing loop,
-   re-apply, and re-run `verify.sh`. Watch the forged headers reach upstream.
+   re-apply *with a config change*, and re-run the forged-header curl from
+   Step 1. Watch the forged values reach upstream.
 
 See [SOLUTION.md](SOLUTION.md).
 

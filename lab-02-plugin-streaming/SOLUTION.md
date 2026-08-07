@@ -16,7 +16,7 @@ unverified token straight into headers your backend trusts.
 **2. It strips inbound headers using its own prefix.** Without that loop, a
 client could simply send `X-JWT-sub: admin` with no token and impersonate
 anyone, because the upstream cannot tell a gateway-set header from a
-client-supplied one. `verify.sh` tests this on every run.
+client-supplied one. Step 1's forged-header curl tests exactly this.
 
 In production, pair it with `jwt` or `openid-connect`. Say that out loud in a
 customer demo — SEs who show claim-forwarding without mentioning validation
@@ -71,11 +71,11 @@ easy, which makes schema versioning discipline more important, not less.
 
 ## Stretch 3 — break it on purpose
 
-Delete the anti-spoofing loop, re-apply with a config change, and re-run
-`verify.sh`. The spoofing check flips to:
+Delete the anti-spoofing loop, re-apply with a config change, and re-run the
+forged-header curl from Step 1. The output flips from `none - stripped` to:
 
 ```
-    !! forged headers REACHED upstream: ['X-Jwt-Sub', 'X-Jwt-Tenant-Id']
+  X-JWT-* headers reaching upstream: ['X-Jwt-Sub', 'X-Jwt-Tenant-Id']
 ```
 
 Any upstream trusting `X-JWT-sub` is now trivially bypassable. Restore it with

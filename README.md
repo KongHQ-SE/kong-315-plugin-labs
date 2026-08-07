@@ -7,9 +7,9 @@ Two hands-on exercises covering the plugin features introduced in **Kong Gateway
 | [Lab 01](lab-01-plugin-cloning/) | **Plugin Cloning** — run two instances of `request-transformer-advanced` in one request | ~15 min |
 | [Lab 02](lab-02-plugin-streaming/) | **Plugin Streaming** — ship a JWT claims-to-headers plugin from the control plane, no image rebuild | ~15 min |
 
-There's also an [alternate Lab 02](alternate-business-hours/) (a business-hours
-access gate) if you'd rather demo something with no auth context. Same feature,
-simpler Lua, narrower story.
+Each lab walks you through explicit `curl` commands and shows the expected
+output, so you read what the gateway actually did rather than trusting a script
+that says "PASS".
 
 Everything runs against **your own Konnect org** with a single Kong 3.15 data plane in Docker on your laptop.
 
@@ -52,15 +52,21 @@ You should see JSON echoing your request headers. If you do, you're ready.
 
 ## The one thing that will confuse you
 
-**Config changes take 10–16 seconds to reach the data plane.** If you curl immediately after applying, you will see the *previous* config and conclude the exercise is broken.
+**Config changes take 10–16 seconds to reach the data plane.** If you curl
+immediately after applying, you will see the *previous* config and conclude the
+exercise is broken.
 
-Every lab uses this helper instead of guessing:
+When a result looks wrong, **re-run the same curl** before debugging anything
+else. That's the fix nine times out of ten.
+
+If you'd rather block than re-run by hand, there's an optional helper:
 
 ```bash
-./bin/wait-for 'X-Gate: open'      # blocks until that header appears, or times out
+./bin/wait-for --present X-Jwt-Sub    # blocks until that header reaches the upstream
 ```
 
-Use it. It will save you from debugging a problem that doesn't exist.
+It only waits — it never tells you whether the exercise worked. That part is
+yours to read out of the curl output, which is the whole point of these labs.
 
 ---
 
