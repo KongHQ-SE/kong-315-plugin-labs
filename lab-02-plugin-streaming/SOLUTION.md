@@ -1,76 +1,91 @@
 # Lab 02 — Solution notes
 
-## Step 4: the Dallas window
+## The security model — read this before demoing to a customer
 
-```yaml
-allowed_days: ["mon","tue","wed","thu","fri"]
-start_hour: 9
-end_hour: 17
-utc_offset_hours: -5
-```
+**This plugin decodes claims. It does not verify signatures.** On its own it
+would happily trust any JWT-shaped string a client sends.
 
-`utc_offset_hours: -5` is US Central **Daylight** Time. Central Standard Time is
-`-6`. The plugin takes a fixed offset, so it does not follow DST transitions — a
-deliberate simplification, and worth naming out loud if a customer asks.
+Two things keep it safe, and both are deliberate:
 
-If you need true timezone handling, that's an argument for a file-installed
-plugin with a timezone library, since streamed plugins can't `require()` one.
+**1. It runs after authentication.** `PRIORITY = 900` puts it below Kong's auth
+plugins (`key-auth` is 1250, `jwt` higher still), so by the time it executes the
+token has already been validated. This is the same priority lesson as Lab 01 —
+if you set this plugin *above* your auth plugin, you're mapping claims from an
+unverified token straight into headers your backend trusts.
 
-## Reading the 503 body
+**2. It strips inbound headers using its own prefix.** Without that loop, a
+client could simply send `X-JWT-sub: admin` with no token and impersonate
+anyone, because the upstream cannot tell a gateway-set header from a
+client-supplied one. `verify.sh` tests this on every run.
 
-```json
-{
-  "message": "Closed for scheduled maintenance. Try again shortly.",
-  "reason": "outside-hours",
-  "local_hour": 14,
-  "local_dow": 5
-}
-```
+In production, pair it with `jwt` or `openid-connect`. Say that out loud in a
+customer demo — SEs who show claim-forwarding without mentioning validation
+teach a vulnerability.
 
-- `local_dow` is `0` = Sunday through `6` = Saturday
-- `local_hour` is 24-hour, already offset-adjusted
+## Stretch 1 — make a claim mandatory
 
-`reason` distinguishes the two ways to be closed:
-
-- `day-not-allowed` — today isn't in `allowed_days`
-- `outside-hours` — right day, wrong hour
-
-## How the date math works
+Add a config field:
 
 ```lua
-local t    = ngx.time() + math.floor((config.utc_offset_hours or 0) * 3600)
-local days = math.floor(t / 86400)
-local dow  = (days + 4) % 7
-local hour = math.floor((t % 86400) / 3600)
+{ required_claims = { type = "array", elements = { type = "string" }, default = {} } },
 ```
 
-Epoch day 0 (1970-01-01) was a **Thursday**. With Sunday as 0, Thursday is 4, so
-`(days + 4) % 7` maps epoch days onto weekday indices.
+Then, after decoding, before mapping:
 
-Verified live: on Friday 2026-08-07 at 20:00 UTC the plugin reported
-`local_dow: 5` and `local_hour: 20`. Both correct.
+```lua
+for _, claim in ipairs(config.required_claims or {}) do
+  if lookup(claims, claim) == nil then
+    return kong.response.exit(403, {
+      message = "token is missing a required claim",
+      claim = claim,
+    })
+  end
+end
+```
 
-## Why not `os.date()`?
+Remember this is a code change — pair it with a config change or the data plane
+will keep running the old handler.
 
-`os.date()` does work in a streamed plugin — that was verified, not assumed. The
-arithmetic version was chosen because it doesn't depend on the container's
-timezone data, which is a deployment variable you don't control across a fleet.
-Either approach is defensible; this one has one fewer moving part.
+## Stretch 2 — rename claims on the way out
 
-## Things that surprised us while building this
+Change `claims` from an array of strings to an array of records:
 
-**Bumping `VERSION` does not trigger a code reload.** It looks like it should.
-It doesn't. Only a config payload change (or a restart) does.
+```lua
+{ claims = {
+    type = "array",
+    elements = {
+      type = "record",
+      fields = {
+        { name   = { type = "string", required = true } },
+        { header = { type = "string" } },
+      },
+    },
+} },
+```
 
-**`--include-plugin-definitions` is required.** Without it decK silently skips
-`custom_plugins` and `cloned_plugins` entirely — your sync "succeeds" and nothing
-happens.
+Then in the handler use `entry.header or header_name(prefix, entry.name)`.
 
-**Config propagation takes 10–16 seconds.** Long enough that curling immediately
-gives you the previous state and a wrong conclusion. Use `./bin/wait-for`.
+This is a **breaking schema change** — existing plugin configs using the old
+shape will fail validation. Worth discussing: streamed plugins make code changes
+easy, which makes schema versioning discipline more important, not less.
 
-**`kong.response.exit()` with a Lua table** serializes to JSON automatically and
-sets the content type, so you don't need to reach for `cjson` at all here.
+## Stretch 3 — break it on purpose
+
+Delete the anti-spoofing loop, re-apply with a config change, and re-run
+`verify.sh`. The spoofing check flips to:
+
+```
+    !! forged headers REACHED upstream: ['X-Jwt-Sub', 'X-Jwt-Tenant-Id']
+```
+
+Any upstream trusting `X-JWT-sub` is now trivially bypassable. Restore it with
+`step3-hotpatch.yaml`.
+
+## Why `cjson.safe` rather than `cjson`
+
+`cjson.decode` raises on malformed input. `cjson.safe.decode` returns `nil` plus
+an error instead. A plugin in the request path should never throw on a
+client-supplied string — a malformed token would become a 500.
 
 ## What the sandbox actually allows
 
@@ -87,6 +102,28 @@ data plane from inside a streamed plugin:
 | `os.date()` / `os.time()` | work |
 | `kong.request.get_body()` | available |
 
-That matters for scoping real customer plugins: JSON parsing, base64 decoding,
-and hashing are all on the table. What you can't do is split your plugin across
-files, run in `init_worker`, create timers, or touch the filesystem.
+That's why this plugin can parse JSON and base64 at all. What you can't do is
+split across files, run in `init_worker`, create timers, or touch the filesystem.
+
+## Base64url vs base64
+
+JWT uses base64**url** encoding: `-` and `_` instead of `+` and `/`, and padding
+stripped. `ngx.decode_base64` expects standard base64, so the handler translates
+the alphabet and re-adds padding. A remainder of 1 is invalid and returns `nil`
+rather than garbage.
+
+## Things that surprised us while building this
+
+**Bumping `VERSION` does not trigger a code reload.** It looks like it should.
+Only a config payload change (or a restart) does.
+
+**`--include-plugin-definitions` is required.** Without it decK silently skips
+`custom_plugins` and `cloned_plugins` entirely — your sync "succeeds" and nothing
+happens.
+
+**Config propagation takes 10–16 seconds.** Long enough that curling immediately
+gives you the previous state and a wrong conclusion. Use `./bin/wait-for`.
+
+**Wait on a condition that distinguishes the new state.** After Step 1, waiting
+on `--status 200` is useless — the route returned 200 before the plugin existed.
+Wait on `--present X-Jwt-Sub`.

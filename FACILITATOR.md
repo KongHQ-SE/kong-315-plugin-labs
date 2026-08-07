@@ -15,7 +15,7 @@ priority boundary), it was measured, not assumed.
 | 0:02 | **Lab 01** steps 1–2: apply the broken config, watch the guardrail vanish (5 min) |
 | 0:07 | Explain plugin precedence (3 min) |
 | 0:10 | **Lab 01** step 3: clone it, both run (5 min) |
-| 0:15 | **Lab 02** steps 1–2: ship a custom plugin, change its config (7 min) |
+| 0:15 | **Lab 02** steps 1–2: ship the claims plugin, hit the nested-claim wall (7 min) |
 | 0:22 | **Lab 02** step 3: change the code, no restart (6 min) |
 | 0:28 | The propagation gotcha + customer conversations (2 min) |
 
@@ -36,6 +36,24 @@ architect recognises.
 **Lab 02, step 3.** Plugin code changes on a running gateway. Have them read the
 data plane's start time out loud before and after — same process, new behaviour.
 Then ask what their current process is for a ten-line Lua change.
+
+Step 2 sets this up: adding the nested claim to config *looks* like it should
+work and silently doesn't. That's what makes step 3 land — it's not a contrived
+code change, it's the only thing that could have fixed the problem.
+
+### Say the security part out loud
+
+Lab 02's plugin **decodes** claims; it does not verify signatures. Two things
+keep it safe, and both are worth naming:
+
+- `PRIORITY = 900` puts it below the auth plugins, so the token is already
+  validated by the time it runs. Same priority lesson as Lab 01 — nice callback.
+- It strips inbound `X-JWT-*` headers, so a client can't forge one. `verify.sh`
+  tests this every run.
+
+An SE who demos claim-forwarding without mentioning validation has just taught
+the room a vulnerability. Stretch task 3 has attendees remove the anti-spoofing
+loop and watch forged headers reach the upstream, if you want to make it visceral.
 
 ---
 

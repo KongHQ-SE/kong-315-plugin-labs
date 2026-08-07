@@ -1,23 +1,13 @@
 _format_version: "3.0"
 
-# STEP 1 — ship a custom plugin with no image build and no file copying.
+# STEP 2 — a config-only change, and a lesson.
 #
-# THE PROBLEM THIS SOLVES
-# Kong's jwt and openid-connect plugins validate the token, but they forward
-# only X-Consumer-ID and X-Consumer-Custom-ID upstream — not the claims. So
-# every upstream service ends up re-parsing the JWT itself just to learn who
-# the caller is. At least six separate community plugins exist to fix this,
-# which tells you how often teams hit it.
+# Product comes back: "our IdP is Keycloak, the roles we actually care about
+# are nested under realm_access.roles. Can you forward those too?"
 #
-# `custom_plugins` carries the plugin's schema and handler as inline Lua. The
-# control plane becomes the source of truth for plugin CODE, not just config,
-# and streams it to every connected data plane.
-#
-# SECURITY NOTE
-# This plugin DECODES claims. It does not verify signatures. PRIORITY is 900 so
-# it runs after the auth plugins (key-auth is 1250, jwt is higher still) — pair
-# it with jwt or openid-connect in production. It also strips any inbound
-# X-JWT-* header so a client cannot forge one. See SOLUTION.md.
+# The handler below is BYTE-IDENTICAL to step 1. The only change is adding
+# "realm_access.roles" to the claims list. Apply it and see what happens —
+# then read step 3.
 
 custom_plugins:
   - name: jwt-claims-to-headers
@@ -129,5 +119,5 @@ services:
         plugins:
           - name: jwt-claims-to-headers
             config:
-              claims: ["sub", "email", "tenant_id", "roles"]
+              claims: ["sub", "email", "tenant_id", "roles", "realm_access.roles"]
               header_prefix: "X-JWT-"

@@ -38,9 +38,17 @@ while (( SECONDS < deadline )); do
   # The probe headers must actually be SENT, otherwise an --absent check passes
   # trivially (nothing to strip) and reports success before the config has even
   # propagated. These are the headers Lab 01's guardrail is meant to remove.
+  #
+  # Lab 02's plugin only maps claims when a token is present, so pass one
+  # through when TOKEN is exported. Without this, waiting on an X-Jwt-* header
+  # times out even though the plugin is working perfectly.
+  auth=()
+  [[ -n "${TOKEN:-}" ]] && auth=(-H "Authorization: Bearer ${TOKEN}")
+
   code=$(curl -sS -o "$body" -D "$body.h" -w '%{http_code}' \
     -H 'X-Internal-Debug: leak-me' \
     -H 'X-Internal-Trace: also-leak' \
+    "${auth[@]}" \
     "${PROXY}${PATH_SUFFIX}" --max-time 10 2>/dev/null)
 
   case "$MODE" in

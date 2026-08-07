@@ -1,0 +1,107 @@
+_format_version: "3.0"
+
+# STEP 3 — change the plugin's CODE on a running fleet.
+#
+# Two things changed from step 2:
+#   1. the handler now returns X-Gate-Opens-At and X-Gate-Hotpatch  (CODE)
+#   2. the `message` config value is different                      (CONFIG)
+#
+# The config change is not decoration. Read this carefully:
+#
+#   Data planes reconcile when the CONFIG PAYLOAD changes. Plugin code rides
+#   along with that payload. If you edit ONLY the handler and re-sync, the
+#   control plane stores your new code and the data plane keeps running the
+#   OLD code — no error, no warning. Verified: a code-only change was still
+#   not live after 90 seconds; adding a one-field config change made the same
+#   code go live in 16 seconds.
+#
+# So: when you ship a code change, ship a config change with it — or restart
+# the data plane. In practice a real code change almost always comes with a
+# config change, which is why this is easy to miss until it bites you.
+
+custom_plugins:
+  - name: business-hours-gate
+    schema: |
+      return {
+        name = "business-hours-gate",
+        fields = {
+          { config = {
+              type = "record",
+              fields = {
+                { allowed_days = {
+                    type = "array",
+                    elements = { type = "string", one_of = { "sun","mon","tue","wed","thu","fri","sat" } },
+                    default = { "mon","tue","wed","thu","fri" },
+                } },
+                { start_hour = { type = "integer", between = { 0, 23 }, default = 9 } },
+                { end_hour = { type = "integer", between = { 1, 24 }, default = 17 } },
+                { utc_offset_hours = { type = "number", between = { -12, 14 }, default = 0 } },
+                { bypass_header = { type = "string", default = "X-Break-Glass" } },
+                { message = { type = "string", default = "Service is closed outside business hours." } },
+              },
+          } },
+        },
+      }
+    handler: |
+      local BusinessHoursGate = {
+        PRIORITY = 1000,
+        VERSION = "1.1.0",
+      }
+
+      local DAYS = { sun = 0, mon = 1, tue = 2, wed = 3, thu = 4, fri = 5, sat = 6 }
+
+      function BusinessHoursGate:access(config)
+        local bh = config.bypass_header
+        if bh and bh ~= "" and kong.request.get_header(bh) then
+          kong.service.request.set_header("X-Gate-Bypass", "true")
+          return
+        end
+
+        local t    = ngx.time() + math.floor((config.utc_offset_hours or 0) * 3600)
+        local days = math.floor(t / 86400)
+        local dow  = (days + 4) % 7
+        local hour = math.floor((t % 86400) / 3600)
+
+        local day_ok = false
+        for _, d in ipairs(config.allowed_days or {}) do
+          if DAYS[d] == dow then
+            day_ok = true
+            break
+          end
+        end
+
+        local hour_ok = (hour >= config.start_hour) and (hour < config.end_hour)
+
+        if day_ok and hour_ok then
+          kong.service.request.set_header("X-Gate", "open")
+          return
+        end
+
+        local reason = (not day_ok) and "day-not-allowed" or "outside-hours"
+        return kong.response.exit(503,
+          { message = config.message, reason = reason, local_hour = hour, local_dow = dow },
+          { ["Retry-After"]     = "3600",
+            ["X-Gate-Reason"]   = reason,
+            ["X-Gate-Opens-At"] = tostring(config.start_hour) .. ":00",
+            ["X-Gate-Hotpatch"] = "v2" })
+      end
+
+      return BusinessHoursGate
+
+services:
+  - name: mock
+    url: http://lab-httpbin:8080/anything
+    routes:
+      - name: mock
+        paths:
+          - /mock
+        strip_path: false
+        plugins:
+          - name: business-hours-gate
+            config:
+              allowed_days: ["sun","mon","tue","wed","thu","fri","sat"]
+              start_hour: 9
+              end_hour: 9
+              utc_offset_hours: 0
+              # CONFIG DELTA — this is what triggers reconciliation.
+              message: "Closed for scheduled maintenance. Try again shortly."

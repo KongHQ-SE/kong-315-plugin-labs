@@ -2,9 +2,13 @@ _format_version: "3.0"
 
 # STEP 3 — change the plugin's CODE on a running fleet.
 #
+# Step 2 failed silently: the plugin looked up a literal key called
+# "realm_access.roles" in a flat table, found nothing, and moved on. Config
+# alone could never fix that. It needs new logic.
+#
 # Two things changed from step 2:
-#   1. the handler now returns X-Gate-Opens-At and X-Gate-Hotpatch  (CODE)
-#   2. the `message` config value is different                      (CONFIG)
+#   1. a lookup() helper that resolves dot-separated paths      (CODE)
+#   2. the "iss" claim added to the list                        (CONFIG)
 #
 # The config change is not decoration. Read this carefully:
 #
@@ -13,95 +17,130 @@ _format_version: "3.0"
 #   control plane stores your new code and the data plane keeps running the
 #   OLD code — no error, no warning. Verified: a code-only change was still
 #   not live after 90 seconds; adding a one-field config change made the same
-#   code go live in 16 seconds.
+#   code go live in 16 seconds. Bumping VERSION does not help either.
 #
 # So: when you ship a code change, ship a config change with it — or restart
-# the data plane. In practice a real code change almost always comes with a
-# config change, which is why this is easy to miss until it bites you.
+# the data plane.
 
 custom_plugins:
-  - name: business-hours-gate
+  - name: jwt-claims-to-headers
     schema: |
       return {
-        name = "business-hours-gate",
+        name = "jwt-claims-to-headers",
         fields = {
           { config = {
               type = "record",
               fields = {
-                { allowed_days = {
-                    type = "array",
-                    elements = { type = "string", one_of = { "sun","mon","tue","wed","thu","fri","sat" } },
-                    default = { "mon","tue","wed","thu","fri" },
-                } },
-                { start_hour = { type = "integer", between = { 0, 23 }, default = 9 } },
-                { end_hour = { type = "integer", between = { 1, 24 }, default = 17 } },
-                { utc_offset_hours = { type = "number", between = { -12, 14 }, default = 0 } },
-                { bypass_header = { type = "string", default = "X-Break-Glass" } },
-                { message = { type = "string", default = "Service is closed outside business hours." } },
+                { claims = { type = "array", elements = { type = "string" }, default = { "sub" } } },
+                { header_prefix = { type = "string", default = "X-JWT-" } },
+                { token_header = { type = "string", default = "Authorization" } },
               },
           } },
         },
       }
     handler: |
-      local BusinessHoursGate = {
-        PRIORITY = 1000,
+      local cjson = require("cjson.safe")
+
+      local JwtClaimsToHeaders = {
+        PRIORITY = 900,
         VERSION = "1.1.0",
       }
 
-      local DAYS = { sun = 0, mon = 1, tue = 2, wed = 3, thu = 4, fri = 5, sat = 6 }
+      local function b64url_decode(s)
+        if not s then return nil end
+        s = s:gsub("-", "+")
+        s = s:gsub("_", "/")
+        local rem = #s % 4
+        if rem == 2 then s = s .. "=="
+        elseif rem == 3 then s = s .. "="
+        elseif rem == 1 then return nil end
+        return ngx.decode_base64(s)
+      end
 
-      function BusinessHoursGate:access(config)
-        local bh = config.bypass_header
-        if bh and bh ~= "" and kong.request.get_header(bh) then
-          kong.service.request.set_header("X-Gate-Bypass", "true")
-          return
+      local function header_name(prefix, claim)
+        return prefix .. (claim:gsub("[%._]", "-"))
+      end
+
+      -- Resolve a dot-separated path such as "realm_access.roles".
+      local function lookup(claims, path)
+        local node = claims
+        for part in path:gmatch("[^%.]+") do
+          if type(node) ~= "table" then return nil end
+          node = node[part]
         end
+        return node
+      end
 
-        local t    = ngx.time() + math.floor((config.utc_offset_hours or 0) * 3600)
-        local days = math.floor(t / 86400)
-        local dow  = (days + 4) % 7
-        local hour = math.floor((t % 86400) / 3600)
+      local function stringify(v)
+        local t = type(v)
+        if t == "string" then return v end
+        if t == "number" or t == "boolean" then return tostring(v) end
+        if t == "table" then
+          local parts = {}
+          for _, item in ipairs(v) do
+            if type(item) == "string" or type(item) == "number" then
+              parts[#parts + 1] = tostring(item)
+            end
+          end
+          if #parts > 0 then return table.concat(parts, ",") end
+          return cjson.encode(v)
+        end
+        return nil
+      end
 
-        local day_ok = false
-        for _, d in ipairs(config.allowed_days or {}) do
-          if DAYS[d] == dow then
-            day_ok = true
-            break
+      function JwtClaimsToHeaders:access(config)
+        local prefix = config.header_prefix
+        local lower_prefix = prefix:lower()
+
+        -- Anti-spoofing: drop inbound headers using our prefix so a client
+        -- cannot forge X-JWT-sub and impersonate somebody.
+        for name, _ in pairs(kong.request.get_headers()) do
+          if name:lower():find(lower_prefix, 1, true) == 1 then
+            kong.service.request.clear_header(name)
           end
         end
 
-        local hour_ok = (hour >= config.start_hour) and (hour < config.end_hour)
-
-        if day_ok and hour_ok then
-          kong.service.request.set_header("X-Gate", "open")
+        local auth = kong.request.get_header(config.token_header)
+        if not auth then
           return
         end
 
-        local reason = (not day_ok) and "day-not-allowed" or "outside-hours"
-        return kong.response.exit(503,
-          { message = config.message, reason = reason, local_hour = hour, local_dow = dow },
-          { ["Retry-After"]     = "3600",
-            ["X-Gate-Reason"]   = reason,
-            ["X-Gate-Opens-At"] = tostring(config.start_hour) .. ":00",
-            ["X-Gate-Hotpatch"] = "v2" })
+        local token = auth:match("^%s*[Bb]earer%s+(.+)$") or auth
+        local payload_b64 = token:match("^[^%.]+%.([^%.]+)%.")
+        if not payload_b64 then
+          kong.log.warn("token is not a well-formed JWT")
+          return
+        end
+
+        local raw = b64url_decode(payload_b64)
+        local claims = raw and cjson.decode(raw)
+        if type(claims) ~= "table" then
+          kong.log.warn("could not decode JWT payload")
+          return
+        end
+
+        local mapped = 0
+        for _, claim in ipairs(config.claims or {}) do
+          local s = stringify(lookup(claims, claim))
+          if s then
+            kong.service.request.set_header(header_name(prefix, claim), s)
+            mapped = mapped + 1
+          end
+        end
+        kong.service.request.set_header(prefix .. "claims-mapped", tostring(mapped))
       end
 
-      return BusinessHoursGate
+      return JwtClaimsToHeaders
 
 services:
   - name: mock
     url: http://lab-httpbin:8080/anything
     routes:
       - name: mock
-        paths:
-          - /mock
+        paths: [/mock]
         strip_path: false
         plugins:
-          - name: business-hours-gate
+          - name: jwt-claims-to-headers
             config:
-              allowed_days: ["sun","mon","tue","wed","thu","fri","sat"]
-              start_hour: 9
-              end_hour: 9
-              utc_offset_hours: 0
-              # CONFIG DELTA — this is what triggers reconciliation.
-              message: "Closed for scheduled maintenance. Try again shortly."
+              claims: ["sub", "email", "tenant_id", "roles", "realm_access.roles", "iss"]
+              header_prefix: "X-JWT-"

@@ -5,7 +5,11 @@ Two hands-on exercises covering the plugin features introduced in **Kong Gateway
 | Lab | Feature | Time |
 |-----|---------|------|
 | [Lab 01](lab-01-plugin-cloning/) | **Plugin Cloning** — run two instances of `request-transformer-advanced` in one request | ~15 min |
-| [Lab 02](lab-02-plugin-streaming/) | **Plugin Streaming** — ship a custom Lua plugin from the control plane, no image rebuild | ~15 min |
+| [Lab 02](lab-02-plugin-streaming/) | **Plugin Streaming** — ship a JWT claims-to-headers plugin from the control plane, no image rebuild | ~15 min |
+
+There's also an [alternate Lab 02](alternate-business-hours/) (a business-hours
+access gate) if you'd rather demo something with no auth context. Same feature,
+simpler Lua, narrower story.
 
 Everything runs against **your own Konnect org** with a single Kong 3.15 data plane in Docker on your laptop.
 
