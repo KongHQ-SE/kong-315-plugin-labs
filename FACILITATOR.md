@@ -144,7 +144,9 @@ Useful if someone asks and you don't want to guess.
   name), `ref` (required, must be cloneable, cannot clone a clone),
   `priority` (optional; inherits the referenced plugin's priority when omitted,
   and is stored as `null` rather than resolved)
-- 16 cloneable bundled plugins in 3.15: `openid-connect`, `acl`, `pre-function`,
+- 16 cloneable bundled plugins in 3.15 — each one confirmed by creating a real
+  clone against a 3.15 control plane, not just read from the changelog:
+  `openid-connect`, `acl`, `pre-function`,
   `post-function`, `request-transformer-advanced`, `request-transformer`,
   `response-transformer-advanced`, `response-transformer`, `key-auth`,
   `file-log`, `http-log`, `tcp-log`, `ip-restriction`, `route-by-header`, `opa`,
