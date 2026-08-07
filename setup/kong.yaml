@@ -1,0 +1,9 @@
+_format_version: "3.0"
+services:
+  - name: mock
+    url: http://lab-httpbin:8080/anything
+    routes:
+      - name: mock
+        paths:
+          - /mock
+        strip_path: false

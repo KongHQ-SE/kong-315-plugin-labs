@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# decK wrapper: runs decK v1.65.1 in a container so nobody needs a local install.
+#
+# Plugin streaming (custom_plugins) and plugin cloning (cloned_plugins) require
+# decK >= 1.65.1. Most laptops have an older version, and on macOS the Homebrew
+# tap needs `brew trust kong/deck` on top of that -- two ways to get stuck before
+# the lab even starts. The container sidesteps both.
+#
+# Usage: ./bin/deck gateway sync somefile.yaml
+set -euo pipefail
+
+: "${KONNECT_TOKEN:?KONNECT_TOKEN is not set. Run: export KONNECT_TOKEN='kpat_...'}"
+export DECK_KONNECT_TOKEN="$KONNECT_TOKEN"
+
+CP_NAME="${CP_NAME:-kong-315-labs}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Docker Desktop only bind-mounts shared paths (/Users on macOS by default).
+# Mounting the repo root keeps relative file paths working inside the container.
+exec docker run --rm \
+  -e DECK_KONNECT_TOKEN \
+  -v "$REPO_ROOT:/work" \
+  -w /work \
+  kong/deck:latest \
+  "$@" --konnect-control-plane-name "$CP_NAME"

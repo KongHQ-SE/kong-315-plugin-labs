@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Blocks until the gateway's response to /mock matches an expected condition.
+#
+# WHY THIS EXISTS
+# Konnect pushes config to data planes asynchronously. In testing this took
+# 10-16 seconds. If you curl right after applying config you will see the
+# PREVIOUS state and conclude the exercise failed. This waits for the new state
+# to actually be live before you measure anything.
+#
+# Usage:
+#   ./bin/wait-for 'X-Gate: open'          # wait for a response header to appear
+#   ./bin/wait-for --status 503            # wait for a specific HTTP status
+#   ./bin/wait-for --absent X-Internal-Debug   # wait for an UPSTREAM header to disappear
+#
+# Upstream header checks read the JSON echoed back by httpbin, i.e. what Kong
+# actually forwarded, not what the client sent.
+set -uo pipefail
+
+TIMEOUT="${TIMEOUT:-90}"
+PROXY="${PROXY:-$("$(dirname "${BASH_SOURCE[0]}")/proxy-url")}"
+PATH_SUFFIX="${PATH_SUFFIX:-/mock}"
+
+MODE="header"
+case "${1:-}" in
+  --status) MODE="status"; EXPECT="${2:?--status needs a code}" ;;
+  --absent) MODE="absent"; EXPECT="${2:?--absent needs a header name}" ;;
+  --present) MODE="present"; EXPECT="${2:?--present needs a header name}" ;;
+  "") echo "usage: wait-for 'Header: value' | --status CODE | --absent HEADER | --present HEADER" >&2; exit 2 ;;
+  *) EXPECT="$1" ;;
+esac
+
+deadline=$(( SECONDS + TIMEOUT ))
+attempt=0
+
+while (( SECONDS < deadline )); do
+  attempt=$(( attempt + 1 ))
+  body=$(mktemp)
+  # The probe headers must actually be SENT, otherwise an --absent check passes
+  # trivially (nothing to strip) and reports success before the config has even
+  # propagated. These are the headers Lab 01's guardrail is meant to remove.
+  code=$(curl -sS -o "$body" -D "$body.h" -w '%{http_code}' \
+    -H 'X-Internal-Debug: leak-me' \
+    -H 'X-Internal-Trace: also-leak' \
+    "${PROXY}${PATH_SUFFIX}" --max-time 10 2>/dev/null)
+
+  case "$MODE" in
+    status)
+      [[ "$code" == "$EXPECT" ]] && { echo "ok: HTTP $EXPECT after ${SECONDS}s"; rm -f "$body" "$body.h"; exit 0; }
+      ;;
+    header)
+      # 'Name: value' matches name and value; a bare 'Name' matches the name only.
+      name="${EXPECT%%:*}"
+      if [[ "$EXPECT" == *:* ]]; then
+        value="${EXPECT#*:}"; value="${value# }"
+        pattern="^${name}:.*${value}"
+      else
+        pattern="^${name}:"
+      fi
+      if tr -d '\r' < "$body.h" | grep -qi "$pattern"; then
+        echo "ok: response header '$EXPECT' present after ${SECONDS}s"; rm -f "$body" "$body.h"; exit 0
+      fi
+      ;;
+    present|absent)
+      seen=$(python3 -c "
+import json,sys
+try: h=json.load(open('$body')).get('headers',{})
+except Exception: sys.exit(3)
+print('yes' if '$EXPECT'.lower() in {k.lower() for k in h} else 'no')
+" 2>/dev/null)
+      [[ "$MODE" == "present" && "$seen" == "yes" ]] && { echo "ok: upstream saw $EXPECT after ${SECONDS}s"; rm -f "$body" "$body.h"; exit 0; }
+      [[ "$MODE" == "absent"  && "$seen" == "no"  ]] && { echo "ok: $EXPECT gone upstream after ${SECONDS}s"; rm -f "$body" "$body.h"; exit 0; }
+      ;;
+  esac
+
+  rm -f "$body" "$body.h"
+  sleep 2
+done
+
+echo "TIMEOUT after ${TIMEOUT}s waiting for: $MODE $EXPECT" >&2
+echo "Last HTTP status: ${code:-none}" >&2
+echo "If this keeps happening, see FACILITATOR.md -> Troubleshooting." >&2
+exit 1

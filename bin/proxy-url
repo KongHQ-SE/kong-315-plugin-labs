@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Prints the proxy URL for the running lab data plane.
+#
+# The setup script may bind Kong to auto-assigned host ports when 8000/8443 are
+# already taken (SSH tunnels and other dev servers love port 8000), so the proxy
+# port is not predictable. Always resolve it rather than hardcoding :8000.
+set -euo pipefail
+
+GW="${GW_NAME:-kong-quickstart-gateway}"
+
+if ! docker inspect "$GW" >/dev/null 2>&1; then
+  echo "error: container '$GW' not found. Run ./setup/start.sh first." >&2
+  exit 1
+fi
+
+PORT="$(docker port "$GW" 8000/tcp 2>/dev/null | head -1 | sed 's/.*://')"
+
+if [[ -z "$PORT" ]]; then
+  echo "error: could not determine proxy port for '$GW'." >&2
+  exit 1
+fi
+
+echo "http://localhost:${PORT}"

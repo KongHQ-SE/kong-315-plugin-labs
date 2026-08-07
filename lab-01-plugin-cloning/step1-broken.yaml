@@ -1,0 +1,35 @@
+_format_version: "3.0"
+
+# STEP 1 — the problem.
+#
+# Two teams, two legitimate needs, one plugin:
+#   * The platform team wants a GLOBAL guardrail that scrubs spoofable
+#     internal headers off every request entering the gateway.
+#   * The app team wants a ROUTE-LEVEL transform that tags their traffic.
+#
+# Both reach for request-transformer-advanced. Apply this and see what happens.
+
+services:
+  - name: mock
+    url: http://lab-httpbin:8080/anything
+    routes:
+      - name: mock
+        paths:
+          - /mock
+        strip_path: false
+        plugins:
+          # App team: route-scoped
+          - name: request-transformer-advanced
+            config:
+              add:
+                headers:
+                  - "X-App-Tier: gold"
+
+plugins:
+  # Platform team: global guardrail
+  - name: request-transformer-advanced
+    config:
+      remove:
+        headers:
+          - X-Internal-Debug
+          - X-Internal-Trace

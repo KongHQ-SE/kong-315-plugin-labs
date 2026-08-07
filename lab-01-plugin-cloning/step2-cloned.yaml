@@ -1,0 +1,50 @@
+_format_version: "3.0"
+
+# STEP 2 — the fix, using plugin cloning (new in 3.15).
+#
+# `cloned_plugins` creates a NEW plugin that reuses the referenced plugin's
+# code and schema under a different name. Because it is a different plugin
+# name, it no longer collides with the app team's instance, and both run.
+#
+# Fields:
+#   name     required. Must be unique, lowercase [a-z0-9-], and must NOT be
+#            the name of a bundled plugin. Prefix your clones so a future
+#            Kong release can't collide with them.
+#   ref      required. The bundled plugin to clone. Must be cloneable, and
+#            you cannot clone a clone.
+#   priority optional. Omit it and the clone inherits the referenced plugin's
+#            priority. Set it to control execution order explicitly.
+#
+# Why 900: request-transformer-advanced's effective priority sits just below
+# 802. Verified empirically — a clone at 802+ runs BEFORE the stock plugin,
+# and at 801 or lower it runs AFTER. 900 leaves comfortable headroom.
+
+cloned_plugins:
+  - name: rta-platform
+    ref: request-transformer-advanced
+    priority: 900
+
+services:
+  - name: mock
+    url: http://lab-httpbin:8080/anything
+    routes:
+      - name: mock
+        paths:
+          - /mock
+        strip_path: false
+        plugins:
+          # App team: UNCHANGED. They keep using the stock plugin.
+          - name: request-transformer-advanced
+            config:
+              add:
+                headers:
+                  - "X-App-Tier: gold"
+
+plugins:
+  # Platform team: now a distinct plugin, so no precedence collision.
+  - name: rta-platform
+    config:
+      remove:
+        headers:
+          - X-Internal-Debug
+          - X-Internal-Trace

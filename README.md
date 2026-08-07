@@ -1,0 +1,81 @@
+# Kong Gateway 3.15 Plugin Labs
+
+Two hands-on exercises covering the plugin features introduced in **Kong Gateway 3.15**:
+
+| Lab | Feature | Time |
+|-----|---------|------|
+| [Lab 01](lab-01-plugin-cloning/) | **Plugin Cloning** — run two instances of `request-transformer-advanced` in one request | ~15 min |
+| [Lab 02](lab-02-plugin-streaming/) | **Plugin Streaming** — ship a custom Lua plugin from the control plane, no image rebuild | ~15 min |
+
+Everything runs against **your own Konnect org** with a single Kong 3.15 data plane in Docker on your laptop.
+
+> **Facilitators:** read [FACILITATOR.md](FACILITATOR.md) for run-of-show, timings, and the failure modes that will actually bite you.
+
+---
+
+## Prerequisites
+
+- **Docker** running, with ~2 GB free
+- A **Konnect account** and a **personal access token** ([create one here](https://cloud.konghq.com/global/account/tokens))
+- `curl`, `python3` (both ship with macOS)
+
+**You do not need decK installed.** The `bin/deck` wrapper in this repo runs decK v1.65.1 in a container, so everyone is on an identical version. Plugin streaming requires decK ≥ 1.65.1, and most laptops have something older.
+
+---
+
+## Setup (do this *before* the session starts)
+
+```bash
+export KONNECT_TOKEN='kpat_your_token_here'
+```
+
+```bash
+./setup/start.sh
+```
+
+That script creates a Konnect control plane named `kong-315-labs`, runs a Kong 3.15 data plane in Docker with plugin streaming enabled, starts a local httpbin upstream, and applies a `mock` service and route.
+
+It prints your proxy URL at the end. Save it:
+
+```bash
+export PROXY=$(./bin/proxy-url)
+curl -s $PROXY/mock | python3 -m json.tool
+```
+
+You should see JSON echoing your request headers. If you do, you're ready.
+
+---
+
+## The one thing that will confuse you
+
+**Config changes take 10–16 seconds to reach the data plane.** If you curl immediately after applying, you will see the *previous* config and conclude the exercise is broken.
+
+Every lab uses this helper instead of guessing:
+
+```bash
+./bin/wait-for 'X-Gate: open'      # blocks until that header appears, or times out
+```
+
+Use it. It will save you from debugging a problem that doesn't exist.
+
+---
+
+## Teardown
+
+```bash
+./setup/teardown.sh
+```
+
+Removes the local containers and deletes the `kong-315-labs` control plane from your Konnect org. Nothing else in your org is touched.
+
+---
+
+## Repo layout
+
+```
+setup/          one-command environment bring-up and teardown
+bin/            deck wrapper, proxy URL helper, propagation waiter
+lab-01-*/       plugin cloning: broken config -> cloned fix -> stretch task
+lab-02-*/       plugin streaming: deploy a custom plugin -> hot-update it
+FACILITATOR.md  run-of-show and troubleshooting
+```
